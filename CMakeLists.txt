@@ -9,10 +9,11 @@ find_package(unofficial-uwebsockets CONFIG REQUIRED)
 find_package(maxminddb CONFIG REQUIRED)
 find_package(ZLIB REQUIRED)
 
-add_executable(Server 
-    src/main.cpp 
-    src/GeoIPManager.cpp 
+add_executable(Server
+    src/main.cpp
+    src/GeoIPManager.cpp
     src/GameServer.cpp
+    src/CountryCentroids.cpp
 )
 
 target_include_directories(Server PRIVATE 
