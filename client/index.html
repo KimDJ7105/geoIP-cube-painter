@@ -1,70 +1,74 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>WSL C++ 게임서버 완벽 동기화 시각화</title>
+    <title>GeoIP Cube Painter</title>
     <style>
-        body { margin: 0; background-color: #1a1a1a; color: #ffffff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
-        canvas { border: 2px solid #444; background-color: #111; }
+        body { margin: 0; background-color: #f0f0f0; color: #222; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
+        canvas { border: 2px solid #444; background-color: #ffffff; }
         #info { margin-bottom: 10px; font-size: 16px; font-weight: bold; }
     </style>
 </head>
 <body>
     <div id="info">접속 중... (서버 연산 대기)</div>
-    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
 
     <script>
-        const PacketType = { KEY_INPUT: 1, KEY_ACK: 2, MOVE_BROADCAST: 3, WELCOME: 4, USER_LEAVE: 5 };
+        const PacketType = { KEY_INPUT: 1, KEY_ACK: 2, MOVE_BROADCAST: 3, WELCOME: 4, USER_LEAVE: 5, PAINT_CELL: 6 };
+        const CELL_SIZE = 20;
+        const MAP_WIDTH = 800;
+        const MAP_HEIGHT = 400;
+
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
-        const remoteUsers = new Map();
+        const remoteUsers = new Map();      // userId -> { x, y }
+        const paintedCells = new Map();     // "cellX,cellY" -> countryCode
         const keyState = { 'W': false, 'A': false, 'S': false, 'D': false };
-        
-        // 4바이트 일반 숫자형 ID 보관
+
         let myId = null;
 
         const ws = new WebSocket("ws://127.0.0.1:7777");
         ws.binaryType = "arraybuffer";
 
-        ws.onopen = () => { console.log("🎯 C++ 서버와 바이너리 세션이 수립되었습니다."); };
-        ws.onerror = (e) => console.error("❌ 연결 에러:", e);
-        ws.onclose = (e) => console.warn(`⚠️ 연결 종료 코드: ${e.code}`);
+        ws.onopen = () => { console.log("C++ 서버와 바이너리 세션이 수립되었습니다."); };
+        ws.onerror = (e) => console.error("연결 에러:", e);
+        ws.onclose = (e) => console.warn(`연결 종료 코드: ${e.code}`);
+
+        function countryColor(code) {
+            let hash = 0;
+            for (let i = 0; i < code.length; i++) hash = (hash * 31 + code.charCodeAt(i)) >>> 0;
+            const hue = hash % 360;
+            return `hsl(${hue}, 65%, 55%)`;
+        }
 
         ws.onmessage = (event) => {
-            if (event.data instanceof ArrayBuffer) {
-                const view = new DataView(event.data);
-                if (view.byteLength < 1) return;
-                const type = view.getUint8(0);
+            if (!(event.data instanceof ArrayBuffer)) return;
+            const view = new DataView(event.data);
+            if (view.byteLength < 1) return;
+            const type = view.getUint8(0);
 
-                console.log(`[네트워크 수신] 패킷 타입 헤더: ${type} | 크기: ${view.byteLength} 바이트`);
-
-                // 1. WELCOME 패킷 파싱 (5바이트: 1 + 4)
-                if (type === PacketType.WELCOME) {
-                    if (view.byteLength < 5) return;
-                    myId = view.getUint32(1, true); // 일반 숫자로 깔끔하게 수신
-                    document.getElementById("info").innerText = `🎯 내 유저 ID: ${myId} | WSAD 키로 조작하세요!`;
-                }
-                
-                // 2. MOVE_BROADCAST 패킷 파싱 (13바이트: 1 + 4 + 4 + 4)
-                else if (type === PacketType.MOVE_BROADCAST) {
-                    if (view.byteLength < 13) return;
-                    
-                    const userId = view.getUint32(1, true);
-                    const posX = view.getFloat32(5, true);  // 1 + 4 = 5
-                    const posY = view.getFloat32(9, true);  // 5 + 4 = 9
-
-                    remoteUsers.set(userId, { x: posX, y: posY });
-                }
-
-                // 3. USER_LEAVE 패킷 파싱 (5바이트: 1 + 4)
-                else if (type === PacketType.USER_LEAVE) {
-                    if (view.byteLength < 5) return;
-                    const leaveUserId = view.getUint32(1, true);
-                    
-                    if (remoteUsers.has(leaveUserId)) {
-                        remoteUsers.delete(leaveUserId);
-                        console.log(`[퇴장 완료] 유저 ${leaveUserId}번 자원 해제 완료`);
-                    }
-                }
+            if (type === PacketType.WELCOME) {
+                if (view.byteLength < 5) return;
+                myId = view.getUint32(1, true);
+                document.getElementById("info").innerText = `내 유저 ID: ${myId} | WSAD 키로 조작하세요!`;
+            }
+            else if (type === PacketType.MOVE_BROADCAST) {
+                if (view.byteLength < 13) return;
+                const userId = view.getUint32(1, true);
+                const posX = view.getFloat32(5, true);
+                const posY = view.getFloat32(9, true);
+                remoteUsers.set(userId, { x: posX, y: posY });
+            }
+            else if (type === PacketType.USER_LEAVE) {
+                if (view.byteLength < 5) return;
+                const leaveUserId = view.getUint32(1, true);
+                remoteUsers.delete(leaveUserId);
+            }
+            else if (type === PacketType.PAINT_CELL) {
+                if (view.byteLength < 7) return;
+                const cellX = view.getUint16(1, true);
+                const cellY = view.getUint16(3, true);
+                const countryCode = String.fromCharCode(view.getUint8(5)) + String.fromCharCode(view.getUint8(6));
+                paintedCells.set(`${cellX},${cellY}`, countryCode);
             }
         };
 
@@ -89,27 +93,44 @@
             ws.send(buffer);
         }
 
+        function drawPlayerCube(x, y, isMe, label) {
+            const size = 16;
+            ctx.fillStyle = isMe ? "#00ffcc" : "#ff3366";
+            ctx.strokeStyle = "#000000";
+            ctx.lineWidth = 2;
+            ctx.fillRect(x - size / 2, y - size / 2, size, size);
+            ctx.strokeRect(x - size / 2, y - size / 2, size, size);
+
+            ctx.fillStyle = "#222222";
+            ctx.font = "bold 11px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText(label, x, y - size / 2 - 6);
+        }
+
         function renderLoop() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.strokeStyle = "#222";
-            for (let i = 0; i < canvas.width; i += 40) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, canvas.height); ctx.stroke(); }
-            for (let i = 0; i < canvas.height; i += 40) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke(); }
 
+            // 칠해진 칸
+            paintedCells.forEach((countryCode, key) => {
+                const [cx, cy] = key.split(",").map(Number);
+                ctx.fillStyle = countryColor(countryCode);
+                ctx.fillRect(cx * CELL_SIZE, cy * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            });
+
+            // 옅은 격자선
+            ctx.strokeStyle = "rgba(0,0,0,0.08)";
+            ctx.lineWidth = 1;
+            for (let gx = 0; gx <= MAP_WIDTH; gx += CELL_SIZE) {
+                ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, MAP_HEIGHT); ctx.stroke();
+            }
+            for (let gy = 0; gy <= MAP_HEIGHT; gy += CELL_SIZE) {
+                ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(MAP_WIDTH, gy); ctx.stroke();
+            }
+
+            // 플레이어
             remoteUsers.forEach((user, userId) => {
-                const screenX = 400 + (user.x * 100); 
-                const screenY = 300 + (user.y * 100);
-
-                ctx.beginPath();
-                ctx.arc(screenX, screenY, 15, 0, Math.PI * 2);
-                ctx.fillStyle = (userId === myId) ? "#00ffcc" : "#ff3366";
-                ctx.fill(); 
-                ctx.strokeStyle = "#000000";
-                ctx.lineWidth = 2;
-                ctx.stroke(); 
-                ctx.closePath();
-
-                ctx.fillStyle = "#ffffff"; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center";
-                ctx.fillText(userId === myId ? `Me (ID: ${userId})` : `User ${userId}`, screenX, screenY - 22);
+                const isMe = userId === myId;
+                drawPlayerCube(user.x, user.y, isMe, isMe ? `Me (ID: ${userId})` : `User ${userId}`);
             });
 
             requestAnimationFrame(renderLoop);
