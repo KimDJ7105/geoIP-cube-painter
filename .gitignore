@@ -1,0 +1,6 @@
+build/
+db/*.dat
+db/*.mmdb
+.vscode/
+*.o
+*.log
