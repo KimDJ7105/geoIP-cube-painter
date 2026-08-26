@@ -1,6 +1,7 @@
 #include "GameServer.h"
 #include "GeoIPManager.h"
 #include "Packets.h"
+#include "CountryCentroids.h"
 #include <iostream>
 #include <string_view>
 
@@ -19,29 +20,33 @@ void GameServer::setup_behavior() {
 
     /* 1. 커넥션 오픈 핸들러 (GeoIP 결합) */
     behavior_.open = [this](auto *ws) {
-        // 클라이언트가 접근해서 웹 소켓 연결이 생성될때 실행된다. 
+        // 클라이언트가 접근해서 웹 소켓 연결이 생성될때 실행된다.
         std::string_view remote_address = ws->getRemoteAddressAsText();
-        
+
         // 브로드 캐스팅 구독
         ws->subscribe("broadcast");
 
         std::string country = "LOCAL";
         // IPv4 로컬 호스트 및 IPv6 룹백 주소가 아닐 때만 국가 조회 수행
-        if (remote_address != "127.0.0.1" && remote_address != "::1" && 
+        if (remote_address != "127.0.0.1" && remote_address != "::1" &&
             remote_address.find("ffff:ac1b") == std::string_view::npos) { // 사설 매핑 대역 제외 예외처리
             country = geoip_manager_.get_country_code(remote_address);
         }
+        // 게임 로직/패킷 전송에는 항상 2자리로 정규화된 코드를 사용 (LOCAL/UNKNOWN -> XX)
+        std::string game_country = normalize_country_code(country);
 
         //id 가져오고 1 증가
         uint32_t user_id = next_user_id_.fetch_add(1);
 
+        // 자국 대표 좌표를 등장방형 투영으로 변환한 위치에서 시작
+        auto [start_x, start_y] = get_start_position(game_country);
+
         // 유저 정보 구조체에 정보 저장
         PerSocketData *user_data = ws->getUserData();
-        user_data->country = country;
+        user_data->country = game_country;
         user_data->id = user_id;
-        user_data->country = country;
-        user_data->x = 0.0;
-        user_data->y = 0.0;
+        user_data->x = start_x;
+        user_data->y = start_y;
         user_data->is_moving_up = false;
         user_data->is_moving_down = false;
         user_data->is_moving_left = false;
@@ -57,10 +62,31 @@ void GameServer::setup_behavior() {
 
         ws->send(std::string_view(reinterpret_cast<const char*>(&welcome_packet), sizeof(welcome_packet)), uWS::OpCode::BINARY);
 
-        std::cout << "[모듈화 서버] 클라이언트 접속 | IP: " << remote_address 
-                  << " | 국가: " << country << std::endl;
+        // WELCOME에는 좌표가 없으므로, 첫 이동 전에도 본인이 화면에 보이도록 시작 위치를 별도 통보.
+        // 기존 접속자들에게도 같이 브로드캐스트해야, 새 유저가 움직이기 전에도 기존 화면에 바로 나타남.
+        PacketMoveBroadcast initial_pos_packet;
+        initial_pos_packet.type = 3; // PacketType::MOVE_BROADCAST
+        initial_pos_packet.userId = user_id;
+        initial_pos_packet.x = start_x;
+        initial_pos_packet.y = start_y;
+        std::string_view initial_pos_payload(reinterpret_cast<const char*>(&initial_pos_packet), sizeof(initial_pos_packet));
+        ws->send(initial_pos_payload, uWS::OpCode::BINARY);
+        ws->publish("broadcast", initial_pos_payload, uWS::OpCode::BINARY);
+
+        // 이미 접속해 있는 다른 유저들의 현재 위치를 신규 접속자에게 전송
+        send_player_snapshot(ws);
+
+        // 기존에 칠해진 칸들을 신규 접속자에게 한 번에 전송 (그리드 스냅샷)
+        send_grid_snapshot(ws);
+
+        // 시작 지점을 자국 색으로 칠하고 전체에 브로드캐스트
+        try_paint_cell(ws, user_data);
+
+        std::cout << "[모듈화 서버] 클라이언트 접속 | IP: " << remote_address
+                  << " | 국가: " << country << " (" << game_country << ")"
+                  << " | 시작 좌표: (" << start_x << ", " << start_y << ")" << std::endl;
     };
-    
+
     /* 2. 메시지 수신 핸들러 (고성능 바이너리 구조체 패킷 파싱) */
     behavior_.message = [](auto *ws, std::string_view message, uWS::OpCode opCode) {
         // 바이너리 패킷이 아니거나 최소 헤더 크기(1바이트)보다 작으면 차단
@@ -69,7 +95,7 @@ void GameServer::setup_behavior() {
         }
 
         PerSocketData *user_data = ws->getUserData();
-        
+
         // 데이터의 첫 1바이트를 읽어 패킷 타입 확인
         PacketType type = *reinterpret_cast<const PacketType*>(message.data());
 
@@ -91,8 +117,8 @@ void GameServer::setup_behavior() {
                 default: return;
             }
 
-            std::cout << "[바이너리 입력 수신] 유저 ID: " << user_data->id 
-                      << " | 키: " << key 
+            std::cout << "[바이너리 입력 수신] 유저 ID: " << user_data->id
+                      << " | 키: " << key
                       << " | 상태: " << (target_state ? "ON" : "OFF") << std::endl;
 
             // 응답 패킷 조립 및 바이너리 송신
@@ -105,7 +131,7 @@ void GameServer::setup_behavior() {
             ws->send(std::string_view(reinterpret_cast<const char*>(&ack_packet), sizeof(ack_packet)), opCode);
         }
     };
-    
+
     /* 3. 커넥션 클로즈 핸들러 */
     behavior_.close = [this](auto *ws, int /*code*/, std::string_view /*message*/) {
         PerSocketData *user_data = ws->getUserData();
@@ -128,9 +154,73 @@ void GameServer::setup_behavior() {
         // 전송이 완벽히 끝난 후 소켓 포인터를 제거
         clients_.erase(ws);
 
-        std::cout << "[모듈화 서버] 클라이언트 해제 완료 | ID: " << leave_user_id 
+        std::cout << "[모듈화 서버] 클라이언트 해제 완료 | ID: " << leave_user_id
                   << " | 잔여 유저들에게 퇴장 패킷 100% 직통 전송 완료" << std::endl;
     };
+}
+
+void GameServer::try_paint_cell(uWS::WebSocket<false, true, PerSocketData>* ws, PerSocketData* user_data) {
+    int cell_x = static_cast<int>(user_data->x) / CELL_SIZE;
+    int cell_y = static_cast<int>(user_data->y) / CELL_SIZE;
+    if (cell_x < 0) cell_x = 0;
+    if (cell_x >= GRID_COLS) cell_x = GRID_COLS - 1;
+    if (cell_y < 0) cell_y = 0;
+    if (cell_y >= GRID_ROWS) cell_y = GRID_ROWS - 1;
+
+    size_t idx = static_cast<size_t>(cell_y) * GRID_COLS + cell_x;
+
+    // 이미 같은 국가가 소유한 칸이면 다시 칠하거나 브로드캐스트할 필요 없음
+    if (grid_owner_[idx] == user_data->country) return;
+
+    grid_owner_[idx] = user_data->country;
+
+    PacketPaintCell packet;
+    packet.type = PacketType::PAINT_CELL;
+    packet.cellX = static_cast<uint16_t>(cell_x);
+    packet.cellY = static_cast<uint16_t>(cell_y);
+    packet.countryCode[0] = user_data->country.size() > 0 ? user_data->country[0] : 'X';
+    packet.countryCode[1] = user_data->country.size() > 1 ? user_data->country[1] : 'X';
+
+    std::string_view payload(reinterpret_cast<const char*>(&packet), sizeof(packet));
+
+    // 본인에게 통보 + 나머지 전원에게 브로드캐스트 (publish는 발신자 본인에게는 전달되지 않음)
+    ws->send(payload, uWS::OpCode::BINARY);
+    ws->publish("broadcast", payload, uWS::OpCode::BINARY);
+}
+
+void GameServer::send_player_snapshot(uWS::WebSocket<false, true, PerSocketData>* ws) {
+    for (auto* other_ws : clients_) {
+        if (other_ws == ws) continue;  // 자기 자신은 이미 WELCOME/시작 위치로 알고 있으므로 제외
+
+        PerSocketData* other_data = other_ws->getUserData();
+
+        PacketMoveBroadcast packet;
+        packet.type = 3; // PacketType::MOVE_BROADCAST
+        packet.userId = other_data->id;
+        packet.x = other_data->x;
+        packet.y = other_data->y;
+
+        ws->send(std::string_view(reinterpret_cast<const char*>(&packet), sizeof(packet)), uWS::OpCode::BINARY);
+    }
+}
+
+void GameServer::send_grid_snapshot(uWS::WebSocket<false, true, PerSocketData>* ws) {
+    for (int cy = 0; cy < GRID_ROWS; ++cy) {
+        for (int cx = 0; cx < GRID_COLS; ++cx) {
+            size_t idx = static_cast<size_t>(cy) * GRID_COLS + cx;
+            const std::string& owner = grid_owner_[idx];
+            if (owner.empty()) continue;
+
+            PacketPaintCell packet;
+            packet.type = PacketType::PAINT_CELL;
+            packet.cellX = static_cast<uint16_t>(cx);
+            packet.cellY = static_cast<uint16_t>(cy);
+            packet.countryCode[0] = owner.size() > 0 ? owner[0] : 'X';
+            packet.countryCode[1] = owner.size() > 1 ? owner[1] : 'X';
+
+            ws->send(std::string_view(reinterpret_cast<const char*>(&packet), sizeof(packet)), uWS::OpCode::BINARY);
+        }
+    }
 }
 
 void GameServer::setup_game_loop() {
@@ -145,15 +235,13 @@ void GameServer::setup_game_loop() {
     *(GameServer**)us_timer_ext(delay_timer) = this;
 
     // 서버 틱 주기 설정
-    int tick_ms = SERVER_TICK_RATE; 
+    int tick_ms = SERVER_TICK_RATE;
 
     // 타이머가 만료될 때마다 실행될 콜백 함수 등록
     us_timer_set(delay_timer, [](struct us_timer_t *t) {
         // 전달받은 Ext 포인터로부터 GameServer 주소를 복원합니다.
         GameServer* self = *(GameServer**)us_timer_ext(t);
-        
-        // 초당 유저가 이동할 이동 속도 정의 (1초에 5.0 유닛 이동한다고 가정)
-        
+
         double speed = PLAYER_MOVE_SPEED;
         double delta_time = SERVER_TICK_RATE / 1000.0; // 33ms 틱당 이동 거리 = 속도 * (33 / 1000.0)
         double move_distance = speed * delta_time;
@@ -168,11 +256,17 @@ void GameServer::setup_game_loop() {
             if (user_data->is_moving_left)  { user_data->x -= move_distance; is_changed = true; }
             if (user_data->is_moving_right) { user_data->x += move_distance; is_changed = true; }
 
-            // 좌표 변화가 일어난 유저가 있다면 실시간 연산 로그 출력
             if (is_changed) {
-                std::cout << "[틱 업데이트] 유저 ID: " << user_data->id 
+                // 맵 밖으로 나가지 않도록 좌표를 클램핑
+                if (user_data->x < 0) user_data->x = 0;
+                if (user_data->x >= MAP_WIDTH) user_data->x = MAP_WIDTH - 1;
+                if (user_data->y < 0) user_data->y = 0;
+                if (user_data->y >= MAP_HEIGHT) user_data->y = MAP_HEIGHT - 1;
+
+                // 좌표 변화가 일어난 유저가 있다면 실시간 연산 로그 출력
+                std::cout << "[틱 업데이트] 유저 ID: " << user_data->id
                           << " | 현재 좌표: (" << user_data->x << ", " << user_data->y << ")" << std::endl;
-                
+
                 PacketMoveBroadcast packet;
                 packet.type = 3; // PacketType::MOVE_BROADCAST
                 packet.userId = user_data->id;
@@ -187,6 +281,9 @@ void GameServer::setup_game_loop() {
                 // 현재 접속 중인 다른 클라이언트에게 브로드캐스팅
                 // uWS 내부적으로 최적화된 zero-copy 브로드캐스팅
                 ws->publish("broadcast", broadcast_payload, uWS::OpCode::BINARY);
+
+                // 새 칸으로 진입했다면 그 칸을 칠하고 브로드캐스트 (같은 칸이면 내부에서 조기 반환)
+                self->try_paint_cell(ws, user_data);
             }
         }
 

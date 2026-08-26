@@ -11,7 +11,8 @@ enum class PacketType : uint8_t {
     KEY_ACK   = 2,   // 서버 -> 클라이언트: 확인 응답 패킷
     MOVE_BROADCAST = 3, // 서버 -> 클라이언트 : 이동 브로드캐스트 패킷
     WELCOME = 4,   // 서버 -> 클라이언트: 최초 접속 유저 고유 ID 할당 패킷
-    USER_LEAVE = 5   // 서버 -> 클라이언트: 유저 퇴장 알림 패킷
+    USER_LEAVE = 5,   // 서버 -> 클라이언트: 유저 퇴장 알림 패킷
+    PAINT_CELL = 6   // 서버 -> 클라이언트: 칸이 칠해짐(최초 접속 시 스냅샷으로도 재사용)
 };
 
 // 클라이언트가 보내올 키 입력 패킷 구조체
@@ -45,6 +46,14 @@ struct PacketWelcome {
 struct PacketUserLeave {
     PacketType type;    // PacketType::USER_LEAVE (1바이트)
     uint32_t userId;    // 연결이 끊어진 유저의 고유 ID (8바이트)
+};
+
+// 칸 색칠 패킷 (신규 페인팅 브로드캐스트 겸, 접속 시 그리드 스냅샷 전송에도 재사용) (총 7바이트)
+struct PacketPaintCell {
+    PacketType type;      // PacketType::PAINT_CELL (1바이트)
+    uint16_t cellX;        // 그리드 칸 x 인덱스 (2바이트)
+    uint16_t cellY;        // 그리드 칸 y 인덱스 (2바이트)
+    char countryCode[2];   // 칠한 유저의 국가 코드, 2자리로 정규화됨 (2바이트)
 };
 
 #pragma pack(pop) // 바이트 정렬 원상 복구
