@@ -31,11 +31,15 @@
         const VIEWPORT_WIDTH = 1600;
         const VIEWPORT_HEIGHT = 800;
 
+        // AOI 밖으로 나가 위치 갱신이 끊긴 유저는, 마지막 위치에 멈춰 보이는 대신
+        // 이 시간(ms) 이상 갱신이 없으면 그냥 화면에서 숨김 (일반 화면 + 전체 지도 둘 다 적용)
+        const STALE_TIMEOUT_MS = 3000;
+
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
         const statsEl = document.getElementById("stats");
 
-        const remoteUsers = new Map();      // userId -> { x, y }
+        const remoteUsers = new Map();      // userId -> { x, y, lastUpdate }
         const playerCountry = new Map();    // userId -> countryCode
         const paintedCells = new Map();     // "cellX,cellY" -> countryCode
         const keyState = { 'W': false, 'A': false, 'S': false, 'D': false };
@@ -73,7 +77,7 @@
                 const userId = view.getUint32(1, true);
                 const posX = view.getFloat32(5, true);
                 const posY = view.getFloat32(9, true);
-                remoteUsers.set(userId, { x: posX, y: posY });
+                remoteUsers.set(userId, { x: posX, y: posY, lastUpdate: Date.now() });
             }
             else if (type === PacketType.USER_LEAVE) {
                 if (view.byteLength < 5) return;
@@ -196,9 +200,10 @@
                 );
             });
 
-            // 플레이어 위치 (점)
+            // 플레이어 위치 (점) — 갱신 끊긴 지 오래된(STALE) 유저는 멈춘 것처럼 보이지 않도록 숨김
             remoteUsers.forEach((user, userId) => {
                 const isMe = userId === myId;
+                if (!isMe && Date.now() - user.lastUpdate > STALE_TIMEOUT_MS) return;
                 ctx.fillStyle = isMe ? "#ffe600" : "#ff3366";
                 ctx.beginPath();
                 ctx.arc(offsetX + user.x * scale, offsetY + user.y * scale, isMe ? 5 : 3, 0, Math.PI * 2);
@@ -270,13 +275,15 @@
                 ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(VIEWPORT_WIDTH, sy); ctx.stroke();
             }
 
-            // 플레이어
+            // 플레이어 — 갱신 끊긴 지 오래된(STALE) 유저는 멈춘 것처럼 보이지 않도록 숨김
             remoteUsers.forEach((user, userId) => {
+                const isMe = userId === myId;
+                if (!isMe && Date.now() - user.lastUpdate > STALE_TIMEOUT_MS) return;
+
                 const screenX = user.x - cam.left;
                 const screenY = user.y - cam.top;
                 if (screenX < -20 || screenX > VIEWPORT_WIDTH + 20 || screenY < -20 || screenY > VIEWPORT_HEIGHT + 20) return;
 
-                const isMe = userId === myId;
                 const country = playerCountry.get(userId);
                 drawPlayerCube(screenX, screenY, isMe, country, isMe ? `Me (${country || "?"})` : `${userId} (${country || "?"})`);
             });
