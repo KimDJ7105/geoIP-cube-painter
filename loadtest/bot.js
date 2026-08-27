@@ -14,10 +14,14 @@
 
 import ws from 'k6/ws';
 import { check } from 'k6';
+import { Trend } from 'k6/metrics';
 
 const TARGET_HOST = __ENV.TARGET_HOST || '127.0.0.1';
 const TARGET_PORT = __ENV.TARGET_PORT || '7777';
 const MOVE_INTERVAL_MS = parseInt(__ENV.MOVE_INTERVAL_MS || '800', 10);
+
+// KEY_INPUT 전송 시점 -> 서버의 KEY_ACK 응답 수신 시점까지의 지연(ms). 부하에 따른 서버 응답성 측정용.
+const keyAckLatency = new Trend('key_ack_latency_ms');
 
 export const options = {
   vus: parseInt(__ENV.VUS || '10', 10),
@@ -27,7 +31,7 @@ export const options = {
   gracefulStop: '0s',
 };
 
-const PacketType = { KEY_INPUT: 1 };
+const PacketType = { KEY_INPUT: 1, KEY_ACK: 2 };
 const KEYS = ['W', 'A', 'S', 'D'];
 
 function buildKeyInputPacket(keyChar, isDown) {
@@ -44,12 +48,14 @@ export default function () {
 
   const res = ws.connect(url, {}, function (socket) {
     let currentKey = null;
+    let lastSentAt = null;
 
     function pickNewDirection() {
       if (currentKey) {
         socket.sendBinary(buildKeyInputPacket(currentKey, false));
       }
       currentKey = KEYS[Math.floor(Math.random() * KEYS.length)];
+      lastSentAt = Date.now();
       socket.sendBinary(buildKeyInputPacket(currentKey, true));
       socket.setTimeout(pickNewDirection, MOVE_INTERVAL_MS);
     }
@@ -57,6 +63,15 @@ export default function () {
     socket.on('open', () => {
       // 동시 접속 스파이크를 살짝 흩어주기 위한 랜덤 시작 지연
       socket.setTimeout(pickNewDirection, Math.random() * MOVE_INTERVAL_MS);
+    });
+
+    socket.on('binaryMessage', (data) => {
+      const view = new DataView(data);
+      if (view.byteLength < 1) return;
+      if (view.getUint8(0) === PacketType.KEY_ACK && lastSentAt !== null) {
+        keyAckLatency.add(Date.now() - lastSentAt);
+        lastSentAt = null; // 다음 입력 전까지 중복 집계 방지
+      }
     });
 
     socket.on('error', (e) => {
