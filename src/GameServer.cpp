@@ -4,6 +4,9 @@
 #include "CountryCentroids.h"
 #include <iostream>
 #include <string_view>
+#include <string>
+#include <cmath>
+#include <cstring>
 
 GameServer::GameServer(GeoIPManager& geoip_manager) : geoip_manager_(geoip_manager) {
     setup_behavior();
@@ -13,7 +16,7 @@ GameServer::~GameServer() {}
 
 void GameServer::setup_behavior() {
     behavior_.compression = uWS::DISABLED;
-    behavior_.maxPayloadLength = 16 * 1024;
+    behavior_.maxPayloadLength = 64 * 1024; // 그리드 벌크 스냅샷(최대 5000칸 x 6바이트 ≈ 30KB) 수용
     behavior_.idleTimeout = 16;
     behavior_.maxBackpressure = 1 * 1024 * 1024;
     behavior_.closeOnBackpressureLimit = false;
@@ -98,7 +101,7 @@ void GameServer::setup_behavior() {
     };
 
     /* 2. 메시지 수신 핸들러 (고성능 바이너리 구조체 패킷 파싱) */
-    behavior_.message = [](auto *ws, std::string_view message, uWS::OpCode opCode) {
+    behavior_.message = [this](auto *ws, std::string_view message, uWS::OpCode opCode) {
         // 바이너리 패킷이 아니거나 최소 헤더 크기(1바이트)보다 작으면 차단
         if (opCode != uWS::OpCode::BINARY || message.length() < sizeof(PacketType)) {
             return;
@@ -108,6 +111,12 @@ void GameServer::setup_behavior() {
 
         // 데이터의 첫 1바이트를 읽어 패킷 타입 확인
         PacketType type = *reinterpret_cast<const PacketType*>(message.data());
+
+        if (type == PacketType::MAP_REQUEST) {
+            // M 키로 전체 지도를 열람할 때, 정확성을 위해 항상 전체 스냅샷을 다시 전송
+            send_grid_snapshot(ws);
+            return;
+        }
 
         if (type == PacketType::KEY_INPUT) {
             // 패킷 전체 크기 검증 (패킷 크기가 다르면 잘못된 패킷)
@@ -201,11 +210,64 @@ void GameServer::try_paint_cell(uWS::WebSocket<false, true, PerSocketData>* ws, 
 
             std::string_view payload(reinterpret_cast<const char*>(&packet), sizeof(packet));
 
-            // 본인에게 통보 + 나머지 전원에게 브로드캐스트 (publish는 발신자 본인에게는 전달되지 않음)
+            // 본인에게는 항상 즉시 통보
             ws->send(payload, uWS::OpCode::BINARY);
-            ws->publish("broadcast", payload, uWS::OpCode::BINARY);
+
+            // 나머지 클라이언트: AOI(자기 뷰포트+마진) 안이면 즉시 개별 전송.
+            // (원래는 publish()로 전원에게 즉시 broadcast했으나, 접속자가 늘어날수록 화면 밖 변경까지
+            //  전부 실시간으로 뿌리는 게 낭비라 판단해 관심 영역 기반으로 전환)
+            for (auto* other_ws : clients_) {
+                if (other_ws == ws) continue;
+
+                PerSocketData* other_data = other_ws->getUserData();
+                if (is_near_viewer(other_data->x, other_data->y, cx, cy)) {
+                    other_ws->send(payload, uWS::OpCode::BINARY);
+                }
+            }
+
+            // AOI 밖에 있던 클라이언트들은 dirty_cells_를 통해 다음 앰비언트 동기화 때 한꺼번에 받음.
+            // 유저별로 따로 들고 있지 않고 전역 하나만 두므로, 접속자 수가 늘어도 메모리가 배로 늘지 않음.
+            dirty_cells_.insert(static_cast<uint32_t>(idx));
         }
     }
+}
+
+bool GameServer::is_near_viewer(double viewer_x, double viewer_y, int cell_x, int cell_y) const {
+    double cell_center_x = (cell_x + 0.5) * CELL_SIZE;
+    double cell_center_y = (cell_y + 0.5) * CELL_SIZE;
+    double half_w = VIEWPORT_WIDTH / 2.0 + AOI_MARGIN_CELLS * CELL_SIZE;
+    double half_h = VIEWPORT_HEIGHT / 2.0 + AOI_MARGIN_CELLS * CELL_SIZE;
+    return std::abs(cell_center_x - viewer_x) <= half_w && std::abs(cell_center_y - viewer_y) <= half_h;
+}
+
+void GameServer::flush_dirty_cells() {
+    if (dirty_cells_.empty()) return;
+
+    std::string buffer;
+    buffer.push_back(static_cast<char>(PacketType::PAINT_CELL_BULK));
+    buffer.append(2, '\0'); // 개수 자리 예약, 아래서 실제 값으로 채움
+
+    for (uint32_t linear_idx : dirty_cells_) {
+        uint16_t cx = static_cast<uint16_t>(linear_idx % GRID_COLS);
+        uint16_t cy = static_cast<uint16_t>(linear_idx / GRID_COLS);
+        const std::string& owner = grid_owner_[linear_idx];
+
+        buffer.append(reinterpret_cast<const char*>(&cx), sizeof(cx));
+        buffer.append(reinterpret_cast<const char*>(&cy), sizeof(cy));
+        buffer.push_back(owner.size() > 0 ? owner[0] : 'X');
+        buffer.push_back(owner.size() > 1 ? owner[1] : 'X');
+    }
+
+    uint16_t count = static_cast<uint16_t>(dirty_cells_.size());
+    std::memcpy(&buffer[1], &count, sizeof(count));
+
+    // 유저별로 다른 내용을 계산하지 않고, 버퍼를 딱 한 번만 만들어 전체 접속자에게 그대로 재사용해서 전송.
+    // 이미 AOI로 실시간 수신한 클라이언트에게는 다소 중복이지만, 그 정도는 무시할 수준.
+    for (auto* client_ws : clients_) {
+        client_ws->send(std::string_view(buffer.data(), buffer.size()), uWS::OpCode::BINARY);
+    }
+
+    dirty_cells_.clear();
 }
 
 void GameServer::send_player_snapshot(uWS::WebSocket<false, true, PerSocketData>* ws) {
@@ -231,22 +293,30 @@ void GameServer::send_player_snapshot(uWS::WebSocket<false, true, PerSocketData>
 }
 
 void GameServer::send_grid_snapshot(uWS::WebSocket<false, true, PerSocketData>* ws) {
+    std::string buffer;
+    buffer.push_back(static_cast<char>(PacketType::PAINT_CELL_BULK));
+    buffer.append(2, '\0'); // 개수 자리 예약
+
+    uint16_t count = 0;
     for (int cy = 0; cy < GRID_ROWS; ++cy) {
         for (int cx = 0; cx < GRID_COLS; ++cx) {
-            size_t idx = static_cast<size_t>(cy) * GRID_COLS + cx;
-            const std::string& owner = grid_owner_[idx];
+            const std::string& owner = grid_owner_[static_cast<size_t>(cy) * GRID_COLS + cx];
             if (owner.empty()) continue;
 
-            PacketPaintCell packet;
-            packet.type = PacketType::PAINT_CELL;
-            packet.cellX = static_cast<uint16_t>(cx);
-            packet.cellY = static_cast<uint16_t>(cy);
-            packet.countryCode[0] = owner.size() > 0 ? owner[0] : 'X';
-            packet.countryCode[1] = owner.size() > 1 ? owner[1] : 'X';
-
-            ws->send(std::string_view(reinterpret_cast<const char*>(&packet), sizeof(packet)), uWS::OpCode::BINARY);
+            uint16_t ux = static_cast<uint16_t>(cx);
+            uint16_t uy = static_cast<uint16_t>(cy);
+            buffer.append(reinterpret_cast<const char*>(&ux), sizeof(ux));
+            buffer.append(reinterpret_cast<const char*>(&uy), sizeof(uy));
+            buffer.push_back(owner.size() > 0 ? owner[0] : 'X');
+            buffer.push_back(owner.size() > 1 ? owner[1] : 'X');
+            ++count;
         }
     }
+
+    if (count == 0) return; // 칠해진 칸이 없으면 보낼 필요 없음
+
+    std::memcpy(&buffer[1], &count, sizeof(count));
+    ws->send(std::string_view(buffer.data(), buffer.size()), uWS::OpCode::BINARY);
 }
 
 void GameServer::setup_game_loop() {
@@ -311,6 +381,13 @@ void GameServer::setup_game_loop() {
                 // 새 칸으로 진입했다면 그 칸을 칠하고 브로드캐스트 (같은 칸이면 내부에서 조기 반환)
                 self->try_paint_cell(ws, user_data);
             }
+        }
+
+        // AOI 밖에서 쌓인 변경사항을 BULK_SYNC_INTERVAL_MS 주기로 일괄 플러시
+        self->bulk_sync_tick_counter_ += SERVER_TICK_RATE;
+        if (self->bulk_sync_tick_counter_ >= BULK_SYNC_INTERVAL_MS) {
+            self->bulk_sync_tick_counter_ = 0;
+            self->flush_dirty_cells();
         }
 
     }, tick_ms, tick_ms); // 처음 대기 시간, 이후 반복 주기

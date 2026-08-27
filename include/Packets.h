@@ -12,8 +12,10 @@ enum class PacketType : uint8_t {
     MOVE_BROADCAST = 3, // 서버 -> 클라이언트 : 이동 브로드캐스트 패킷
     WELCOME = 4,   // 서버 -> 클라이언트: 최초 접속 유저 고유 ID 할당 패킷
     USER_LEAVE = 5,   // 서버 -> 클라이언트: 유저 퇴장 알림 패킷
-    PAINT_CELL = 6,   // 서버 -> 클라이언트: 칸이 칠해짐(최초 접속 시 스냅샷으로도 재사용)
-    PLAYER_INFO = 7   // 서버 -> 클라이언트: 유저의 국가 정보(접속 시 1회 + 스냅샷용, 이동마다 보내는 MOVE_BROADCAST와 분리해 대역폭 절약)
+    PAINT_CELL = 6,   // 서버 -> 클라이언트: 칸 하나가 칠해짐 (AOI 안에 있는 유저에게 즉시 개별 전송)
+    PLAYER_INFO = 7,  // 서버 -> 클라이언트: 유저의 국가 정보(접속 시 1회 + 스냅샷용, 이동마다 보내는 MOVE_BROADCAST와 분리해 대역폭 절약)
+    PAINT_CELL_BULK = 8, // 서버 -> 클라이언트: 여러 칸을 한 번에 전송 (접속 시 전체 스냅샷 + AOI 밖 변경사항 주기적/요청 동기화)
+    MAP_REQUEST = 9   // 클라이언트 -> 서버: 전체 지도(M 키) 열람 시, 밀린 변경사항을 즉시 벌크로 달라는 요청
 };
 
 // 클라이언트가 보내올 키 입력 패킷 구조체
@@ -63,6 +65,14 @@ struct PacketPlayerInfo {
     uint32_t userId;       // 대상 유저 ID (4바이트)
     char countryCode[2];   // 2자리로 정규화된 국가 코드 (2바이트)
 };
+
+// PAINT_CELL_BULK 레이아웃 (가변 길이, 구조체 대신 직접 바이트를 조립/파싱):
+//   [0]     PacketType (1바이트, PAINT_CELL_BULK)
+//   [1..2]  entryCount (uint16, 리틀 엔디안)
+//   [3..]   entryCount개의 항목, 항목당 6바이트: cellX(uint16) cellY(uint16) countryCode(2)
+// 총 길이 = 3 + entryCount * 6
+
+// MAP_REQUEST: 클라이언트 -> 서버, 헤더 1바이트(PacketType)만 있는 요청 패킷. 별도 구조체 불필요.
 
 #pragma pack(pop) // 바이트 정렬 원상 복구
 

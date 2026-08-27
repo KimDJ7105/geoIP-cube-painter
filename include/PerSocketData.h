@@ -2,12 +2,13 @@
 #define PER_SOCKET_DATA_H
 
 #include <string>
+#include <cstdint>
 
 // 클라이언트 유저 컨텍스트 구조체
 struct PerSocketData {
-    uint64_t id;         // 서버가 발급하는 고유 유저 ID 
+    uint64_t id;         // 서버가 발급하는 고유 유저 ID
     std::string country; // 식별된 접속 국가 코드
-    
+
     // 실시간 2D 게임 좌표
     double x = 0.0;
     double y = 0.0;
