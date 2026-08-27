@@ -18,6 +18,10 @@ struct PerSocketData {
     bool is_moving_down  = false; // S 키
     bool is_moving_left  = false; // A 키
     bool is_moving_right = false; // D 키
+
+    // 마지막 주기적 보정 이후 한 번이라도 움직였는지. 움직였다면 이미 실시간(AOI 즉시 전송)으로
+    // 커버되므로 주기적 보정 대상에서 제외 — 가만히 있는 유저만 보정 대상이 되도록 좁히기 위함.
+    bool moved_since_last_sync = false;
 };
 
 #endif // PER_SOCKET_DATA_H

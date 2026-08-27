@@ -16,7 +16,7 @@ GameServer::~GameServer() {}
 
 void GameServer::setup_behavior() {
     behavior_.compression = uWS::DISABLED;
-    behavior_.maxPayloadLength = 64 * 1024; // 그리드 벌크 스냅샷(최대 5000칸 x 6바이트 ≈ 30KB) 수용
+    behavior_.maxPayloadLength = 128 * 1024; // 그리드 벌크 스냅샷(최대 11250칸 x 6바이트 ≈ 66KB) 수용
     behavior_.idleTimeout = 16;
     behavior_.maxBackpressure = 1 * 1024 * 1024;
     behavior_.closeOnBackpressureLimit = false;
@@ -270,6 +270,37 @@ void GameServer::flush_dirty_cells() {
     dirty_cells_.clear();
 }
 
+void GameServer::sync_stationary_players() {
+    // 지난 주기 동안 한 번도 움직이지 않은 유저만 대상으로 함.
+    // 움직인 유저는 위 틱 루프에서 이미 AOI 기반 실시간 전송으로 커버됐으므로 여기서 또 보낼 필요 없음.
+    for (auto* stationary_ws : clients_) {
+        PerSocketData* stationary_data = stationary_ws->getUserData();
+        if (stationary_data->moved_since_last_sync) continue;
+
+        PacketMoveBroadcast packet;
+        packet.type = 3; // PacketType::MOVE_BROADCAST
+        packet.userId = stationary_data->id;
+        packet.x = stationary_data->x;
+        packet.y = stationary_data->y;
+        std::string_view payload(reinterpret_cast<const char*>(&packet), sizeof(packet));
+
+        for (auto* viewer_ws : clients_) {
+            if (viewer_ws == stationary_ws) continue;
+            PerSocketData* viewer_data = viewer_ws->getUserData();
+            if (is_near_viewer(viewer_data->x, viewer_data->y,
+                                static_cast<int>(stationary_data->x) / CELL_SIZE,
+                                static_cast<int>(stationary_data->y) / CELL_SIZE)) {
+                viewer_ws->send(payload, uWS::OpCode::BINARY);
+            }
+        }
+    }
+
+    // 다음 주기를 위해 전원 리셋
+    for (auto* ws : clients_) {
+        ws->getUserData()->moved_since_last_sync = false;
+    }
+}
+
 void GameServer::send_player_snapshot(uWS::WebSocket<false, true, PerSocketData>* ws) {
     for (auto* other_ws : clients_) {
         if (other_ws == ws) continue;  // 자기 자신은 이미 WELCOME/시작 위치로 알고 있으므로 제외
@@ -359,9 +390,9 @@ void GameServer::setup_game_loop() {
                 if (user_data->y < 0) user_data->y = 0;
                 if (user_data->y >= MAP_HEIGHT) user_data->y = MAP_HEIGHT - 1;
 
-                // 좌표 변화가 일어난 유저가 있다면 실시간 연산 로그 출력
-                std::cout << "[틱 업데이트] 유저 ID: " << user_data->id
-                          << " | 현재 좌표: (" << user_data->x << ", " << user_data->y << ")" << std::endl;
+                // 이번 주기에 움직였음을 표시 — 주기적 정지 유저 보정 대상에서 제외시키기 위함
+                // (움직인 유저는 아래에서 이미 실시간으로 전송되므로 중복 보정이 필요 없음)
+                user_data->moved_since_last_sync = true;
 
                 PacketMoveBroadcast packet;
                 packet.type = 3; // PacketType::MOVE_BROADCAST
@@ -374,20 +405,31 @@ void GameServer::setup_game_loop() {
                 // 본인에게 이동 사실 통보
                 ws->send(broadcast_payload, uWS::OpCode::BINARY);
 
-                // 현재 접속 중인 다른 클라이언트에게 브로드캐스팅
-                // uWS 내부적으로 최적화된 zero-copy 브로드캐스팅
-                ws->publish("broadcast", broadcast_payload, uWS::OpCode::BINARY);
+                // 나머지 클라이언트: AOI(자기 뷰포트+마진) 안에 이 유저가 들어와 있을 때만 개별 전송.
+                // (원래는 publish()로 전 접속자에게 즉시 broadcast했으나, k6 부하 테스트로 실측해보니
+                //  동접자 수의 제곱(O(N²))으로 트래픽이 늘어나는 게 확인되어 AOI 기반으로 전환)
+                for (auto* other_ws : self->clients_) {
+                    if (other_ws == ws) continue;
+                    PerSocketData* other_data = other_ws->getUserData();
+                    if (self->is_near_viewer(other_data->x, other_data->y,
+                                              static_cast<int>(user_data->x) / CELL_SIZE,
+                                              static_cast<int>(user_data->y) / CELL_SIZE)) {
+                        other_ws->send(broadcast_payload, uWS::OpCode::BINARY);
+                    }
+                }
 
                 // 새 칸으로 진입했다면 그 칸을 칠하고 브로드캐스트 (같은 칸이면 내부에서 조기 반환)
                 self->try_paint_cell(ws, user_data);
             }
         }
 
-        // AOI 밖에서 쌓인 변경사항을 BULK_SYNC_INTERVAL_MS 주기로 일괄 플러시
+        // AOI 밖에서 쌓인 변경사항을 BULK_SYNC_INTERVAL_MS 주기로 일괄 플러시 +
+        // 그동안 가만히 있던 유저들의 위치를 (새로 시야에 들어왔을 수 있는 클라이언트에게) 보정
         self->bulk_sync_tick_counter_ += SERVER_TICK_RATE;
         if (self->bulk_sync_tick_counter_ >= BULK_SYNC_INTERVAL_MS) {
             self->bulk_sync_tick_counter_ = 0;
             self->flush_dirty_cells();
+            self->sync_stationary_players();
         }
 
     }, tick_ms, tick_ms); // 처음 대기 시간, 이후 반복 주기

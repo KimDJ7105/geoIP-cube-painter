@@ -47,6 +47,11 @@ private:
     // (유저별 상태가 아니라 전역 상태라 그리드 스캔도, 유저별 반복도 필요 없음)
     void flush_dirty_cells();
 
+    // 지난 주기 동안 한 번도 움직이지 않은 유저들만, 그들이 AOI 안에 들어와 있는
+    // 클라이언트에게 위치를 재통보 (움직인 유저는 이미 실시간 전송으로 커버되므로 제외).
+    // 끝나고 나면 전원의 moved_since_last_sync를 리셋.
+    void sync_stationary_players();
+
     uWS::App::WebSocketBehavior<PerSocketData> behavior_;
     GeoIPManager& geoip_manager_; // 외부에서 주입받은 GeoIP 모듈 참조자
     std::atomic<uint32_t> next_user_id_{1};
