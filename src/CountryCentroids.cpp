@@ -1,6 +1,8 @@
 #include "CountryCentroids.h"
 #include "MapConfig.h"
 #include <unordered_map>
+#include <random>
+#include <iterator>
 
 namespace {
 
@@ -37,8 +39,17 @@ double clampd(double v, double lo, double hi) {
 }  // namespace
 
 std::string normalize_country_code(const std::string& raw_country_code) {
-    if (raw_country_code.size() != 2) return "XX";
-    return raw_country_code;
+    if (raw_country_code.size() == 2) return raw_country_code;
+
+    // LOCAL/UNKNOWN 등(주로 로컬 개발 환경에서 발생) — 매번 같은 자리로 몰리지 않도록
+    // 대표 좌표 테이블에서 무작위로 한 국가를 골라 대신 사용한다.
+    const auto& table = centroid_table();
+    static std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<size_t> dist(0, table.size() - 1);
+
+    auto it = table.begin();
+    std::advance(it, dist(rng));
+    return it->first;
 }
 
 std::pair<double, double> get_start_position(const std::string& raw_country_code) {
