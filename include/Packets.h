@@ -12,7 +12,8 @@ enum class PacketType : uint8_t {
     MOVE_BROADCAST = 3, // 서버 -> 클라이언트 : 이동 브로드캐스트 패킷
     WELCOME = 4,   // 서버 -> 클라이언트: 최초 접속 유저 고유 ID 할당 패킷
     USER_LEAVE = 5,   // 서버 -> 클라이언트: 유저 퇴장 알림 패킷
-    PAINT_CELL = 6   // 서버 -> 클라이언트: 칸이 칠해짐(최초 접속 시 스냅샷으로도 재사용)
+    PAINT_CELL = 6,   // 서버 -> 클라이언트: 칸이 칠해짐(최초 접속 시 스냅샷으로도 재사용)
+    PLAYER_INFO = 7   // 서버 -> 클라이언트: 유저의 국가 정보(접속 시 1회 + 스냅샷용, 이동마다 보내는 MOVE_BROADCAST와 분리해 대역폭 절약)
 };
 
 // 클라이언트가 보내올 키 입력 패킷 구조체
@@ -54,6 +55,13 @@ struct PacketPaintCell {
     uint16_t cellX;        // 그리드 칸 x 인덱스 (2바이트)
     uint16_t cellY;        // 그리드 칸 y 인덱스 (2바이트)
     char countryCode[2];   // 칠한 유저의 국가 코드, 2자리로 정규화됨 (2바이트)
+};
+
+// 유저 국가 정보 패킷 (접속 시 1회 전송 + 신규 접속자용 스냅샷에 재사용) (총 7바이트)
+struct PacketPlayerInfo {
+    PacketType type;      // PacketType::PLAYER_INFO (1바이트)
+    uint32_t userId;       // 대상 유저 ID (4바이트)
+    char countryCode[2];   // 2자리로 정규화된 국가 코드 (2바이트)
 };
 
 #pragma pack(pop) // 바이트 정렬 원상 복구

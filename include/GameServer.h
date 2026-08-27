@@ -21,7 +21,7 @@ private:
     // 약 33ms 주기 (초당 30프레임/30Hz 틱레이트) 설정
     // 만약 초당 60프레임을 원하신다면 16
     static constexpr int SERVER_TICK_RATE = 33;
-    static constexpr double PLAYER_MOVE_SPEED = 60.0;  // 픽셀/초 (월드 좌표 = 캔버스 픽셀 1:1)
+    static constexpr double PLAYER_MOVE_SPEED = 120.0;  // 픽셀/초 (월드 좌표 = 캔버스 픽셀 1:1)
     // uWebSockets의 실제 Behavior 세부 구성을 세팅하는 헬퍼 함수
     void setup_behavior();
     void setup_game_loop(); // 고정 주기로 실행될 게임 루프 설정 함수 추가

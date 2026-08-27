@@ -73,7 +73,17 @@ void GameServer::setup_behavior() {
         ws->send(initial_pos_payload, uWS::OpCode::BINARY);
         ws->publish("broadcast", initial_pos_payload, uWS::OpCode::BINARY);
 
-        // 이미 접속해 있는 다른 유저들의 현재 위치를 신규 접속자에게 전송
+        // 국가 정보도 함께 통보(자신+전체) — 클라이언트가 플레이어를 국가색으로 렌더링하는 데 사용
+        PacketPlayerInfo player_info_packet;
+        player_info_packet.type = PacketType::PLAYER_INFO;
+        player_info_packet.userId = user_id;
+        player_info_packet.countryCode[0] = game_country.size() > 0 ? game_country[0] : 'X';
+        player_info_packet.countryCode[1] = game_country.size() > 1 ? game_country[1] : 'X';
+        std::string_view player_info_payload(reinterpret_cast<const char*>(&player_info_packet), sizeof(player_info_packet));
+        ws->send(player_info_payload, uWS::OpCode::BINARY);
+        ws->publish("broadcast", player_info_payload, uWS::OpCode::BINARY);
+
+        // 이미 접속해 있는 다른 유저들의 현재 위치와 국가를 신규 접속자에게 전송
         send_player_snapshot(ws);
 
         // 기존에 칠해진 칸들을 신규 접속자에게 한 번에 전송 (그리드 스냅샷)
@@ -194,13 +204,19 @@ void GameServer::send_player_snapshot(uWS::WebSocket<false, true, PerSocketData>
 
         PerSocketData* other_data = other_ws->getUserData();
 
-        PacketMoveBroadcast packet;
-        packet.type = 3; // PacketType::MOVE_BROADCAST
-        packet.userId = other_data->id;
-        packet.x = other_data->x;
-        packet.y = other_data->y;
+        PacketMoveBroadcast pos_packet;
+        pos_packet.type = 3; // PacketType::MOVE_BROADCAST
+        pos_packet.userId = other_data->id;
+        pos_packet.x = other_data->x;
+        pos_packet.y = other_data->y;
+        ws->send(std::string_view(reinterpret_cast<const char*>(&pos_packet), sizeof(pos_packet)), uWS::OpCode::BINARY);
 
-        ws->send(std::string_view(reinterpret_cast<const char*>(&packet), sizeof(packet)), uWS::OpCode::BINARY);
+        PacketPlayerInfo info_packet;
+        info_packet.type = PacketType::PLAYER_INFO;
+        info_packet.userId = other_data->id;
+        info_packet.countryCode[0] = other_data->country.size() > 0 ? other_data->country[0] : 'X';
+        info_packet.countryCode[1] = other_data->country.size() > 1 ? other_data->country[1] : 'X';
+        ws->send(std::string_view(reinterpret_cast<const char*>(&info_packet), sizeof(info_packet)), uWS::OpCode::BINARY);
     }
 }
 

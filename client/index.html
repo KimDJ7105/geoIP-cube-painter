@@ -3,24 +3,38 @@
 <head>
     <title>GeoIP Cube Painter</title>
     <style>
-        body { margin: 0; background-color: #f0f0f0; color: #222; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
-        canvas { border: 2px solid #444; background-color: #ffffff; }
+        body { margin: 0; background-color: #f0f0f0; color: #222; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
+        canvas { border: 2px solid #444; background-color: #ffffff; max-width: 95vw; height: auto; }
         #info { margin-bottom: 10px; font-size: 16px; font-weight: bold; }
+        #stats { margin-top: 10px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 8px; max-width: 95vw; justify-content: center; }
+        .stat-chip { display: flex; align-items: center; gap: 4px; background: #fff; border: 1px solid #ccc; border-radius: 10px; padding: 2px 8px; }
+        .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
     </style>
 </head>
 <body>
     <div id="info">접속 중... (서버 연산 대기)</div>
-    <canvas id="gameCanvas" width="800" height="400"></canvas>
+    <canvas id="gameCanvas" width="1600" height="800"></canvas>
+    <div id="stats"></div>
 
     <script>
-        const PacketType = { KEY_INPUT: 1, KEY_ACK: 2, MOVE_BROADCAST: 3, WELCOME: 4, USER_LEAVE: 5, PAINT_CELL: 6 };
-        const CELL_SIZE = 20;
-        const MAP_WIDTH = 800;
-        const MAP_HEIGHT = 400;
+        const PacketType = { KEY_INPUT: 1, KEY_ACK: 2, MOVE_BROADCAST: 3, WELCOME: 4, USER_LEAVE: 5, PAINT_CELL: 6, PLAYER_INFO: 7 };
+        const CELL_SIZE = 32;
+
+        // 전체 월드 크기 (서버 MapConfig.h와 반드시 일치)
+        const MAP_WIDTH = 3200;
+        const MAP_HEIGHT = 1600;
+        const TOTAL_CELLS = (MAP_WIDTH / CELL_SIZE) * (MAP_HEIGHT / CELL_SIZE);
+
+        // 카메라 뷰포트 크기 (= 캔버스 크기). 월드보다 작아서, 내 캐릭터를 중심으로 스크롤됨
+        const VIEWPORT_WIDTH = 1600;
+        const VIEWPORT_HEIGHT = 800;
 
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
+        const statsEl = document.getElementById("stats");
+
         const remoteUsers = new Map();      // userId -> { x, y }
+        const playerCountry = new Map();    // userId -> countryCode
         const paintedCells = new Map();     // "cellX,cellY" -> countryCode
         const keyState = { 'W': false, 'A': false, 'S': false, 'D': false };
 
@@ -62,6 +76,7 @@
                 if (view.byteLength < 5) return;
                 const leaveUserId = view.getUint32(1, true);
                 remoteUsers.delete(leaveUserId);
+                playerCountry.delete(leaveUserId);
             }
             else if (type === PacketType.PAINT_CELL) {
                 if (view.byteLength < 7) return;
@@ -69,6 +84,12 @@
                 const cellY = view.getUint16(3, true);
                 const countryCode = String.fromCharCode(view.getUint8(5)) + String.fromCharCode(view.getUint8(6));
                 paintedCells.set(`${cellX},${cellY}`, countryCode);
+            }
+            else if (type === PacketType.PLAYER_INFO) {
+                if (view.byteLength < 7) return;
+                const userId = view.getUint32(1, true);
+                const countryCode = String.fromCharCode(view.getUint8(5)) + String.fromCharCode(view.getUint8(6));
+                playerCountry.set(userId, countryCode);
             }
         };
 
@@ -93,45 +114,95 @@
             ws.send(buffer);
         }
 
-        function drawPlayerCube(x, y, isMe, label) {
-            const size = 16;
-            ctx.fillStyle = isMe ? "#00ffcc" : "#ff3366";
-            ctx.strokeStyle = "#000000";
-            ctx.lineWidth = 2;
-            ctx.fillRect(x - size / 2, y - size / 2, size, size);
-            ctx.strokeRect(x - size / 2, y - size / 2, size, size);
+        // 카메라(뷰포트)가 현재 보여주는 월드 좌표 좌상단. 내 캐릭터를 중심으로 스크롤되며,
+        // 월드 바깥을 보여주지 않도록 가장자리에서 클램핑된다.
+        function computeCamera() {
+            const me = myId !== null ? remoteUsers.get(myId) : null;
+            const centerX = me ? me.x : MAP_WIDTH / 2;
+            const centerY = me ? me.y : MAP_HEIGHT / 2;
 
-            ctx.fillStyle = "#222222";
-            ctx.font = "bold 11px sans-serif";
-            ctx.textAlign = "center";
-            ctx.fillText(label, x, y - size / 2 - 6);
+            let left = centerX - VIEWPORT_WIDTH / 2;
+            let top = centerY - VIEWPORT_HEIGHT / 2;
+            left = Math.max(0, Math.min(left, MAP_WIDTH - VIEWPORT_WIDTH));
+            top = Math.max(0, Math.min(top, MAP_HEIGHT - VIEWPORT_HEIGHT));
+            return { left, top };
         }
 
-        function renderLoop() {
+        function drawPlayerCube(screenX, screenY, isMe, countryCode, label) {
+            const size = 20; // 칸(32px)보다 확실히 작게 — 색칠 진행이 눈에 잘 띄도록
+            ctx.fillStyle = countryColor(countryCode || "XX");
+            ctx.strokeStyle = isMe ? "#ffe600" : "#000000"; // 본인은 노란 테두리로 구분
+            ctx.lineWidth = isMe ? 3 : 2;
+            ctx.fillRect(screenX - size / 2, screenY - size / 2, size, size);
+            ctx.strokeRect(screenX - size / 2, screenY - size / 2, size, size);
+
+            ctx.fillStyle = "#222222";
+            ctx.font = "bold 12px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText(label, screenX, screenY - size / 2 - 6);
+        }
+
+        function updateStats() {
+            const counts = new Map();
+            paintedCells.forEach((code) => counts.set(code, (counts.get(code) || 0) + 1));
+
+            const rows = [...counts.entries()]
+                .map(([code, count]) => ({ code, pct: (count / TOTAL_CELLS * 100) }))
+                .sort((a, b) => b.pct - a.pct);
+
+            statsEl.innerHTML = rows.map(r =>
+                `<div class="stat-chip"><span class="swatch" style="background:${countryColor(r.code)}"></span>${r.code} ${r.pct.toFixed(1)}%</div>`
+            ).join("");
+        }
+
+        let lastStatsUpdate = 0;
+        function renderLoop(now) {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // 칠해진 칸
+            const cam = computeCamera();
+
+            // 칠해진 칸 — 뷰포트 밖은 그리지 않음 (컬링)
             paintedCells.forEach((countryCode, key) => {
                 const [cx, cy] = key.split(",").map(Number);
+                const worldX = cx * CELL_SIZE;
+                const worldY = cy * CELL_SIZE;
+                if (worldX + CELL_SIZE < cam.left || worldX > cam.left + VIEWPORT_WIDTH) return;
+                if (worldY + CELL_SIZE < cam.top || worldY > cam.top + VIEWPORT_HEIGHT) return;
+
                 ctx.fillStyle = countryColor(countryCode);
-                ctx.fillRect(cx * CELL_SIZE, cy * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                ctx.fillRect(worldX - cam.left, worldY - cam.top, CELL_SIZE, CELL_SIZE);
             });
 
-            // 옅은 격자선
+            // 옅은 격자선 — 뷰포트에 걸리는 범위만
             ctx.strokeStyle = "rgba(0,0,0,0.08)";
             ctx.lineWidth = 1;
-            for (let gx = 0; gx <= MAP_WIDTH; gx += CELL_SIZE) {
-                ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, MAP_HEIGHT); ctx.stroke();
+            const gridStartX = Math.floor(cam.left / CELL_SIZE) * CELL_SIZE;
+            const gridStartY = Math.floor(cam.top / CELL_SIZE) * CELL_SIZE;
+            for (let gx = gridStartX; gx <= cam.left + VIEWPORT_WIDTH; gx += CELL_SIZE) {
+                const sx = gx - cam.left;
+                ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, VIEWPORT_HEIGHT); ctx.stroke();
             }
-            for (let gy = 0; gy <= MAP_HEIGHT; gy += CELL_SIZE) {
-                ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(MAP_WIDTH, gy); ctx.stroke();
+            for (let gy = gridStartY; gy <= cam.top + VIEWPORT_HEIGHT; gy += CELL_SIZE) {
+                const sy = gy - cam.top;
+                ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(VIEWPORT_WIDTH, sy); ctx.stroke();
             }
 
             // 플레이어
             remoteUsers.forEach((user, userId) => {
+                const screenX = user.x - cam.left;
+                const screenY = user.y - cam.top;
+                if (screenX < -20 || screenX > VIEWPORT_WIDTH + 20 || screenY < -20 || screenY > VIEWPORT_HEIGHT + 20) return;
+
                 const isMe = userId === myId;
-                drawPlayerCube(user.x, user.y, isMe, isMe ? `Me (ID: ${userId})` : `User ${userId}`);
+                const country = playerCountry.get(userId);
+                drawPlayerCube(screenX, screenY, isMe, country, isMe ? `Me (${country || "?"})` : `${userId} (${country || "?"})`);
             });
+
+            // 점유율 갱신은 매 프레임 안 하고 250ms마다 (부담 줄이기)
+            if (now - lastStatsUpdate > 250) {
+                updateStats();
+                lastStatsUpdate = now;
+            }
 
             requestAnimationFrame(renderLoop);
         }
