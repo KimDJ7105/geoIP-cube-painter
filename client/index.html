@@ -42,7 +42,8 @@
 
         let myId = null;
 
-        const ws = new WebSocket("ws://127.0.0.1:7777");
+        // 페이지를 서빙한 호스트로 그대로 연결 (로컬/EC2 어디서 열어도 동일하게 동작)
+        const ws = new WebSocket(`ws://${window.location.hostname}:7777`);
         ws.binaryType = "arraybuffer";
 
         ws.onopen = () => { console.log("C++ 서버와 바이너리 세션이 수립되었습니다."); };
