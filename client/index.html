@@ -129,7 +129,7 @@
         }
 
         function drawPlayerCube(screenX, screenY, isMe, countryCode, label) {
-            const size = 20; // 칸(32px)보다 확실히 작게 — 색칠 진행이 눈에 잘 띄도록
+            const size = 56; // 캐릭터가 눈에 잘 보이는 크기. 실제로 칠하는 범위(서버 PLAYER_FOOTPRINT)는 의도적으로 더 작음
             ctx.fillStyle = countryColor(countryCode || "XX");
             ctx.strokeStyle = isMe ? "#ffe600" : "#000000"; // 본인은 노란 테두리로 구분
             ctx.lineWidth = isMe ? 3 : 2;

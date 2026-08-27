@@ -9,4 +9,9 @@ inline constexpr int CELL_SIZE = 32;    // 칸 하나의 픽셀 크기 (플레�
 inline constexpr int GRID_COLS = MAP_WIDTH / CELL_SIZE;   // 100
 inline constexpr int GRID_ROWS = MAP_HEIGHT / CELL_SIZE;  // 50
 
+// 플레이어가 실제로 칠하는 정사각형(발자국) 크기.
+// 의도적으로 캐릭터 시각적 렌더링 크기(client/index.html의 drawPlayerCube size=56)보다 작게 잡음 —
+// 보이는 크기와 칠하는 범위를 분리해서, 이동 중 칠해지는 궤적이 너무 두꺼워지지 않도록 함
+inline constexpr int PLAYER_FOOTPRINT = 24;
+
 #endif // MAP_CONFIG_H

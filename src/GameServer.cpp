@@ -170,32 +170,42 @@ void GameServer::setup_behavior() {
 }
 
 void GameServer::try_paint_cell(uWS::WebSocket<false, true, PerSocketData>* ws, PerSocketData* user_data) {
-    int cell_x = static_cast<int>(user_data->x) / CELL_SIZE;
-    int cell_y = static_cast<int>(user_data->y) / CELL_SIZE;
-    if (cell_x < 0) cell_x = 0;
-    if (cell_x >= GRID_COLS) cell_x = GRID_COLS - 1;
-    if (cell_y < 0) cell_y = 0;
-    if (cell_y >= GRID_ROWS) cell_y = GRID_ROWS - 1;
+    // 플레이어 발자국(정사각형, PLAYER_FOOTPRINT)과 겹치는 칸을 전부 계산 — 클라이언트 렌더링 크기와 일치
+    double half = PLAYER_FOOTPRINT / 2.0;
 
-    size_t idx = static_cast<size_t>(cell_y) * GRID_COLS + cell_x;
+    int cell_x_min = static_cast<int>((user_data->x - half)) / CELL_SIZE;
+    int cell_x_max = static_cast<int>((user_data->x + half)) / CELL_SIZE;
+    int cell_y_min = static_cast<int>((user_data->y - half)) / CELL_SIZE;
+    int cell_y_max = static_cast<int>((user_data->y + half)) / CELL_SIZE;
 
-    // 이미 같은 국가가 소유한 칸이면 다시 칠하거나 브로드캐스트할 필요 없음
-    if (grid_owner_[idx] == user_data->country) return;
+    if (cell_x_min < 0) cell_x_min = 0;
+    if (cell_x_max >= GRID_COLS) cell_x_max = GRID_COLS - 1;
+    if (cell_y_min < 0) cell_y_min = 0;
+    if (cell_y_max >= GRID_ROWS) cell_y_max = GRID_ROWS - 1;
 
-    grid_owner_[idx] = user_data->country;
+    for (int cy = cell_y_min; cy <= cell_y_max; ++cy) {
+        for (int cx = cell_x_min; cx <= cell_x_max; ++cx) {
+            size_t idx = static_cast<size_t>(cy) * GRID_COLS + cx;
 
-    PacketPaintCell packet;
-    packet.type = PacketType::PAINT_CELL;
-    packet.cellX = static_cast<uint16_t>(cell_x);
-    packet.cellY = static_cast<uint16_t>(cell_y);
-    packet.countryCode[0] = user_data->country.size() > 0 ? user_data->country[0] : 'X';
-    packet.countryCode[1] = user_data->country.size() > 1 ? user_data->country[1] : 'X';
+            // 이미 같은 국가가 소유한 칸이면 다시 칠하거나 브로드캐스트할 필요 없음
+            if (grid_owner_[idx] == user_data->country) continue;
 
-    std::string_view payload(reinterpret_cast<const char*>(&packet), sizeof(packet));
+            grid_owner_[idx] = user_data->country;
 
-    // 본인에게 통보 + 나머지 전원에게 브로드캐스트 (publish는 발신자 본인에게는 전달되지 않음)
-    ws->send(payload, uWS::OpCode::BINARY);
-    ws->publish("broadcast", payload, uWS::OpCode::BINARY);
+            PacketPaintCell packet;
+            packet.type = PacketType::PAINT_CELL;
+            packet.cellX = static_cast<uint16_t>(cx);
+            packet.cellY = static_cast<uint16_t>(cy);
+            packet.countryCode[0] = user_data->country.size() > 0 ? user_data->country[0] : 'X';
+            packet.countryCode[1] = user_data->country.size() > 1 ? user_data->country[1] : 'X';
+
+            std::string_view payload(reinterpret_cast<const char*>(&packet), sizeof(packet));
+
+            // 본인에게 통보 + 나머지 전원에게 브로드캐스트 (publish는 발신자 본인에게는 전달되지 않음)
+            ws->send(payload, uWS::OpCode::BINARY);
+            ws->publish("broadcast", payload, uWS::OpCode::BINARY);
+        }
+    }
 }
 
 void GameServer::send_player_snapshot(uWS::WebSocket<false, true, PerSocketData>* ws) {
