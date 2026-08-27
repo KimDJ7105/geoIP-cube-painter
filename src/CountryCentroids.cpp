@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <random>
 #include <iterator>
+#include <cstdlib>
 
 namespace {
 
@@ -38,10 +39,22 @@ double clampd(double v, double lo, double hi) {
 
 }  // namespace
 
-std::string normalize_country_code(const std::string& raw_country_code) {
-    if (raw_country_code.size() == 2) return raw_country_code;
+namespace {
 
-    // LOCAL/UNKNOWN 등(주로 로컬 개발 환경에서 발생) — 매번 같은 자리로 몰리지 않도록
+// 데모/시연 목적: GEOIP_DEMO_RANDOM_COUNTRY 환경변수가 설정돼 있으면, 실제 GeoIP 판정 결과와
+// 무관하게 항상 무작위 국가를 배정한다. 같은 공인 IP(로컬망 등)에서 여러 명이 접속해도
+// 다양한 국가/색으로 보이게 하기 위한 시연용 오버라이드 — 기본값은 꺼짐(실제 GeoIP 그대로 사용).
+bool demo_random_country_enabled() {
+    static const bool enabled = (std::getenv("GEOIP_DEMO_RANDOM_COUNTRY") != nullptr);
+    return enabled;
+}
+
+}  // namespace
+
+std::string normalize_country_code(const std::string& raw_country_code) {
+    if (!demo_random_country_enabled() && raw_country_code.size() == 2) return raw_country_code;
+
+    // 데모 모드이거나, LOCAL/UNKNOWN 등 2자리 코드가 아닌 경우 — 매번 같은 자리로 몰리지 않도록
     // 대표 좌표 테이블에서 무작위로 한 국가를 골라 대신 사용한다.
     const auto& table = centroid_table();
     static std::mt19937 rng{std::random_device{}()};
