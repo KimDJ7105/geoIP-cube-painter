@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>GeoIP Cube Painter</title>
     <style>
         body { margin: 0; background-color: #f0f0f0; color: #222; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
@@ -15,6 +16,7 @@
     <div id="info">접속 중... (서버 연산 대기)</div>
     <canvas id="gameCanvas" width="1600" height="800"></canvas>
     <div id="stats"></div>
+    <div style="margin-top:6px; font-size:12px; color:#666;">M 키: 전체 지도 보기</div>
 
     <script>
         const PacketType = { KEY_INPUT: 1, KEY_ACK: 2, MOVE_BROADCAST: 3, WELCOME: 4, USER_LEAVE: 5, PAINT_CELL: 6, PLAYER_INFO: 7 };
@@ -93,10 +95,14 @@
             }
         };
 
+        let showFullMap = false;
+
         window.addEventListener("keydown", (e) => {
             const key = e.key.toUpperCase();
             if ((key === 'W' || key === 'A' || key === 'S' || key === 'D') && myId !== null) {
                 if (!keyState[key]) { keyState[key] = true; sendKeyInput(key, 1); }
+            } else if (key === 'M') {
+                showFullMap = !showFullMap;
             }
         });
 
@@ -140,6 +146,60 @@
             ctx.font = "bold 12px sans-serif";
             ctx.textAlign = "center";
             ctx.fillText(label, screenX, screenY - size / 2 - 6);
+        }
+
+        function drawFullMapOverlay(cam) {
+            ctx.fillStyle = "rgba(0,0,0,0.75)";
+            ctx.fillRect(0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+
+            const scale = Math.min(VIEWPORT_WIDTH / MAP_WIDTH, VIEWPORT_HEIGHT / MAP_HEIGHT) * 0.9;
+            const mapDrawWidth = MAP_WIDTH * scale;
+            const mapDrawHeight = MAP_HEIGHT * scale;
+            const offsetX = (VIEWPORT_WIDTH - mapDrawWidth) / 2;
+            const offsetY = (VIEWPORT_HEIGHT - mapDrawHeight) / 2;
+
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(offsetX, offsetY, mapDrawWidth, mapDrawHeight);
+
+            // 칠해진 칸 (전체)
+            paintedCells.forEach((countryCode, key) => {
+                const [cx, cy] = key.split(",").map(Number);
+                ctx.fillStyle = countryColor(countryCode);
+                ctx.fillRect(
+                    offsetX + cx * CELL_SIZE * scale,
+                    offsetY + cy * CELL_SIZE * scale,
+                    Math.max(1, CELL_SIZE * scale),
+                    Math.max(1, CELL_SIZE * scale)
+                );
+            });
+
+            // 플레이어 위치 (점)
+            remoteUsers.forEach((user, userId) => {
+                const isMe = userId === myId;
+                ctx.fillStyle = isMe ? "#ffe600" : "#ff3366";
+                ctx.beginPath();
+                ctx.arc(offsetX + user.x * scale, offsetY + user.y * scale, isMe ? 5 : 3, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // 현재 카메라(뷰포트) 영역 표시 — 지금 화면에 보이는 범위가 전체 맵의 어디인지
+            ctx.strokeStyle = "#00ffcc";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(
+                offsetX + cam.left * scale,
+                offsetY + cam.top * scale,
+                VIEWPORT_WIDTH * scale,
+                VIEWPORT_HEIGHT * scale
+            );
+
+            ctx.strokeStyle = "#444444";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(offsetX, offsetY, mapDrawWidth, mapDrawHeight);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 14px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("전체 지도 (M: 닫기)", VIEWPORT_WIDTH / 2, offsetY - 12);
         }
 
         function updateStats() {
@@ -197,6 +257,10 @@
                 const country = playerCountry.get(userId);
                 drawPlayerCube(screenX, screenY, isMe, country, isMe ? `Me (${country || "?"})` : `${userId} (${country || "?"})`);
             });
+
+            if (showFullMap) {
+                drawFullMapOverlay(cam);
+            }
 
             // 점유율 갱신은 매 프레임 안 하고 250ms마다 (부담 줄이기)
             if (now - lastStatsUpdate > 250) {
