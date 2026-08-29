@@ -16,7 +16,7 @@
     <div id="info">접속 중... (서버 연산 대기)</div>
     <canvas id="gameCanvas" width="1600" height="800"></canvas>
     <div id="stats"></div>
-    <div style="margin-top:6px; font-size:12px; color:#666;">M 키: 전체 지도 보기</div>
+    <div style="margin-top:6px; font-size:12px; color:#666;">M 키: 전체 지도 보기 (전체 지도 안에서 B 키: 지도 배경 켜기/끄기)</div>
 
     <script>
         const PacketType = { KEY_INPUT: 1, KEY_ACK: 2, MOVE_BROADCAST: 3, WELCOME: 4, USER_LEAVE: 5, PAINT_CELL: 6, PLAYER_INFO: 7, PAINT_CELL_BULK: 8, MAP_REQUEST: 9 };
@@ -39,6 +39,12 @@
         const ctx = canvas.getContext("2d");
         const statsEl = document.getElementById("stats");
 
+        // 세계지도 배경 (등장방형 투영, MAP_WIDTH x MAP_HEIGHT와 동일한 좌표계를 갖도록 리사이즈된 이미지)
+        const worldMapImg = new Image();
+        worldMapImg.src = "world_map.png";
+        let worldMapReady = false;
+        worldMapImg.onload = () => { worldMapReady = true; };
+
         const remoteUsers = new Map();      // userId -> { x, y, lastUpdate }
         const playerCountry = new Map();    // userId -> countryCode
         const paintedCells = new Map();     // "cellX,cellY" -> countryCode
@@ -54,12 +60,15 @@
         ws.onerror = (e) => console.error("연결 에러:", e);
         ws.onclose = (e) => console.warn(`연결 종료 코드: ${e.code}`);
 
-        function countryColor(code) {
+        function countryColor(code, alpha = 1) {
             let hash = 0;
             for (let i = 0; i < code.length; i++) hash = (hash * 31 + code.charCodeAt(i)) >>> 0;
             const hue = hash % 360;
-            return `hsl(${hue}, 65%, 55%)`;
+            return `hsla(${hue}, 65%, 55%, ${alpha})`;
         }
+
+        // 칠해진 칸에 줄 살짝의 투명도 — 밑에 지도가 비치되, 칠한 색 자체는 거의 그대로 보이도록 아주 약하게만
+        const PAINT_ALPHA = 0.9;
 
         ws.onmessage = (event) => {
             if (!(event.data instanceof ArrayBuffer)) return;
@@ -114,6 +123,7 @@
         };
 
         let showFullMap = false;
+        let showMapBackgroundInOverlay = true; // 전체 지도(M)에서 지도 배경을 켜고 끄는 토글 — B 키
 
         window.addEventListener("keydown", (e) => {
             const key = e.key.toUpperCase();
@@ -122,6 +132,8 @@
             } else if (key === 'M') {
                 showFullMap = !showFullMap;
                 if (showFullMap) requestMapSync();
+            } else if (key === 'B' && showFullMap) {
+                showMapBackgroundInOverlay = !showMapBackgroundInOverlay;
             }
         });
 
@@ -185,13 +197,19 @@
             const offsetX = (VIEWPORT_WIDTH - mapDrawWidth) / 2;
             const offsetY = (VIEWPORT_HEIGHT - mapDrawHeight) / 2;
 
-            ctx.fillStyle = "#ffffff";
-            ctx.fillRect(offsetX, offsetY, mapDrawWidth, mapDrawHeight);
+            // 지도 배경 — B 키로 켜고 끌 수 있음. 꺼두면 칠해진 형태 자체를 순수하게 볼 수 있음
+            if (showMapBackgroundInOverlay && worldMapReady) {
+                ctx.drawImage(worldMapImg, offsetX, offsetY, mapDrawWidth, mapDrawHeight);
+            } else {
+                ctx.fillStyle = "#ffffff";
+                ctx.fillRect(offsetX, offsetY, mapDrawWidth, mapDrawHeight);
+            }
 
-            // 칠해진 칸 (전체)
+            // 칠해진 칸 (전체) — 지도가 켜져 있을 때만 살짝 투명하게, 꺼져 있으면 칠한 형태가 또렷하도록 불투명하게
+            const overlayPaintAlpha = showMapBackgroundInOverlay ? PAINT_ALPHA : 1;
             paintedCells.forEach((countryCode, key) => {
                 const [cx, cy] = key.split(",").map(Number);
-                ctx.fillStyle = countryColor(countryCode);
+                ctx.fillStyle = countryColor(countryCode, overlayPaintAlpha);
                 ctx.fillRect(
                     offsetX + cx * CELL_SIZE * scale,
                     offsetY + cy * CELL_SIZE * scale,
@@ -227,7 +245,7 @@
             ctx.fillStyle = "#ffffff";
             ctx.font = "bold 14px sans-serif";
             ctx.textAlign = "center";
-            ctx.fillText("전체 지도 (M: 닫기)", VIEWPORT_WIDTH / 2, offsetY - 12);
+            ctx.fillText(`전체 지도 (M: 닫기, B: 지도 배경 ${showMapBackgroundInOverlay ? "끄기" : "켜기"})`, VIEWPORT_WIDTH / 2, offsetY - 12);
         }
 
         function updateStats() {
@@ -249,7 +267,12 @@
 
             const cam = computeCamera();
 
-            // 칠해진 칸 — 뷰포트 밖은 그리지 않음 (컬링)
+            // 세계지도 배경 — 카메라가 보는 월드 영역만 잘라서 그림 (좌표계가 MAP_WIDTH x MAP_HEIGHT로 동일해 별도 변환 불필요)
+            if (worldMapReady) {
+                ctx.drawImage(worldMapImg, cam.left, cam.top, VIEWPORT_WIDTH, VIEWPORT_HEIGHT, 0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+            }
+
+            // 칠해진 칸 — 뷰포트 밖은 그리지 않음 (컬링). 지도가 살짝 비치도록 약한 투명도만 적용
             paintedCells.forEach((countryCode, key) => {
                 const [cx, cy] = key.split(",").map(Number);
                 const worldX = cx * CELL_SIZE;
@@ -257,7 +280,7 @@
                 if (worldX + CELL_SIZE < cam.left || worldX > cam.left + VIEWPORT_WIDTH) return;
                 if (worldY + CELL_SIZE < cam.top || worldY > cam.top + VIEWPORT_HEIGHT) return;
 
-                ctx.fillStyle = countryColor(countryCode);
+                ctx.fillStyle = countryColor(countryCode, PAINT_ALPHA);
                 ctx.fillRect(worldX - cam.left, worldY - cam.top, CELL_SIZE, CELL_SIZE);
             });
 
