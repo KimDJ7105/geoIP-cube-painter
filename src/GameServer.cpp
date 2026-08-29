@@ -179,57 +179,51 @@ void GameServer::setup_behavior() {
 }
 
 void GameServer::try_paint_cell(uWS::WebSocket<false, true, PerSocketData>* ws, PerSocketData* user_data) {
-    // 플레이어 발자국(정사각형, PLAYER_FOOTPRINT)과 겹치는 칸을 전부 계산 — 클라이언트 렌더링 크기와 일치
-    double half = PLAYER_FOOTPRINT / 2.0;
+    // 캐릭터가 위치한 칸 하나만 칠함 — CELL_SIZE가 클라이언트 캐릭터 시각적 크기와 정확히 일치하므로
+    // (예전에는 더 작은 발자국의 겹침 범위를 계산해 한 번에 여러 칸이 칠해질 수 있었으나,
+    //  칸 경계에 걸칠 때마다 트레일이 캐릭터보다 두껍게 보이는 문제가 있어 단일 칸 방식으로 단순화)
+    int cx = static_cast<int>(user_data->x) / CELL_SIZE;
+    int cy = static_cast<int>(user_data->y) / CELL_SIZE;
 
-    int cell_x_min = static_cast<int>((user_data->x - half)) / CELL_SIZE;
-    int cell_x_max = static_cast<int>((user_data->x + half)) / CELL_SIZE;
-    int cell_y_min = static_cast<int>((user_data->y - half)) / CELL_SIZE;
-    int cell_y_max = static_cast<int>((user_data->y + half)) / CELL_SIZE;
+    if (cx < 0) cx = 0;
+    if (cx >= GRID_COLS) cx = GRID_COLS - 1;
+    if (cy < 0) cy = 0;
+    if (cy >= GRID_ROWS) cy = GRID_ROWS - 1;
 
-    if (cell_x_min < 0) cell_x_min = 0;
-    if (cell_x_max >= GRID_COLS) cell_x_max = GRID_COLS - 1;
-    if (cell_y_min < 0) cell_y_min = 0;
-    if (cell_y_max >= GRID_ROWS) cell_y_max = GRID_ROWS - 1;
+    size_t idx = static_cast<size_t>(cy) * GRID_COLS + cx;
 
-    for (int cy = cell_y_min; cy <= cell_y_max; ++cy) {
-        for (int cx = cell_x_min; cx <= cell_x_max; ++cx) {
-            size_t idx = static_cast<size_t>(cy) * GRID_COLS + cx;
+    // 이미 같은 국가가 소유한 칸이면 다시 칠하거나 브로드캐스트할 필요 없음
+    if (grid_owner_[idx] == user_data->country) return;
 
-            // 이미 같은 국가가 소유한 칸이면 다시 칠하거나 브로드캐스트할 필요 없음
-            if (grid_owner_[idx] == user_data->country) continue;
+    grid_owner_[idx] = user_data->country;
 
-            grid_owner_[idx] = user_data->country;
+    PacketPaintCell packet;
+    packet.type = PacketType::PAINT_CELL;
+    packet.cellX = static_cast<uint16_t>(cx);
+    packet.cellY = static_cast<uint16_t>(cy);
+    packet.countryCode[0] = user_data->country.size() > 0 ? user_data->country[0] : 'X';
+    packet.countryCode[1] = user_data->country.size() > 1 ? user_data->country[1] : 'X';
 
-            PacketPaintCell packet;
-            packet.type = PacketType::PAINT_CELL;
-            packet.cellX = static_cast<uint16_t>(cx);
-            packet.cellY = static_cast<uint16_t>(cy);
-            packet.countryCode[0] = user_data->country.size() > 0 ? user_data->country[0] : 'X';
-            packet.countryCode[1] = user_data->country.size() > 1 ? user_data->country[1] : 'X';
+    std::string_view payload(reinterpret_cast<const char*>(&packet), sizeof(packet));
 
-            std::string_view payload(reinterpret_cast<const char*>(&packet), sizeof(packet));
+    // 본인에게는 항상 즉시 통보
+    ws->send(payload, uWS::OpCode::BINARY);
 
-            // 본인에게는 항상 즉시 통보
-            ws->send(payload, uWS::OpCode::BINARY);
+    // 나머지 클라이언트: AOI(자기 뷰포트+마진) 안이면 즉시 개별 전송.
+    // (원래는 publish()로 전원에게 즉시 broadcast했으나, 접속자가 늘어날수록 화면 밖 변경까지
+    //  전부 실시간으로 뿌리는 게 낭비라 판단해 관심 영역 기반으로 전환)
+    for (auto* other_ws : clients_) {
+        if (other_ws == ws) continue;
 
-            // 나머지 클라이언트: AOI(자기 뷰포트+마진) 안이면 즉시 개별 전송.
-            // (원래는 publish()로 전원에게 즉시 broadcast했으나, 접속자가 늘어날수록 화면 밖 변경까지
-            //  전부 실시간으로 뿌리는 게 낭비라 판단해 관심 영역 기반으로 전환)
-            for (auto* other_ws : clients_) {
-                if (other_ws == ws) continue;
-
-                PerSocketData* other_data = other_ws->getUserData();
-                if (is_near_viewer(other_data->x, other_data->y, cx, cy)) {
-                    other_ws->send(payload, uWS::OpCode::BINARY);
-                }
-            }
-
-            // AOI 밖에 있던 클라이언트들은 dirty_cells_를 통해 다음 앰비언트 동기화 때 한꺼번에 받음.
-            // 유저별로 따로 들고 있지 않고 전역 하나만 두므로, 접속자 수가 늘어도 메모리가 배로 늘지 않음.
-            dirty_cells_.insert(static_cast<uint32_t>(idx));
+        PerSocketData* other_data = other_ws->getUserData();
+        if (is_near_viewer(other_data->x, other_data->y, cx, cy)) {
+            other_ws->send(payload, uWS::OpCode::BINARY);
         }
     }
+
+    // AOI 밖에 있던 클라이언트들은 dirty_cells_를 통해 다음 앰비언트 동기화 때 한꺼번에 받음.
+    // 유저별로 따로 들고 있지 않고 전역 하나만 두므로, 접속자 수가 늘어도 메모리가 배로 늘지 않음.
+    dirty_cells_.insert(static_cast<uint32_t>(idx));
 }
 
 bool GameServer::is_near_viewer(double viewer_x, double viewer_y, int cell_x, int cell_y) const {

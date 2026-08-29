@@ -6,14 +6,10 @@
 // 뷰포트(1600x800) 대비 3배 — 2배일 때는 AOI가 월드의 60~70%를 덮어 필터링 효과가 제한적이었음
 inline constexpr int MAP_WIDTH = 4800;  // 경도 -180~180 -> 0~4800
 inline constexpr int MAP_HEIGHT = 2400; // 위도 90~-90 -> 0~2400
-inline constexpr int CELL_SIZE = 32;    // 칸 하나의 픽셀 크기 (플레이어보다 뚜렷하게 크게)
+inline constexpr int CELL_SIZE = 32;    // 칸 하나의 픽셀 크기. client/index.html의 drawPlayerCube size와 동일 —
+                                         // 캐릭터가 위치한 칸 하나만 칠해지도록(GameServer::try_paint_cell) 일치시킴
 inline constexpr int GRID_COLS = MAP_WIDTH / CELL_SIZE;   // 100
 inline constexpr int GRID_ROWS = MAP_HEIGHT / CELL_SIZE;  // 50
-
-// 플레이어가 실제로 칠하는 정사각형(발자국) 크기.
-// 의도적으로 캐릭터 시각적 렌더링 크기(client/index.html의 drawPlayerCube size=56)보다 작게 잡음 —
-// 보이는 크기와 칠하는 범위를 분리해서, 이동 중 칠해지는 궤적이 너무 두꺼워지지 않도록 함
-inline constexpr int PLAYER_FOOTPRINT = 24;
 
 // 클라이언트 카메라 뷰포트 크기 (client/index.html의 VIEWPORT_WIDTH/HEIGHT와 반드시 일치)
 inline constexpr int VIEWPORT_WIDTH = 1600;
