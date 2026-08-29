@@ -65,8 +65,12 @@ std::string normalize_country_code(const std::string& raw_country_code) {
     return it->first;
 }
 
-std::pair<double, double> get_start_position(const std::string& raw_country_code) {
-    const std::string code = normalize_country_code(raw_country_code);
+std::pair<double, double> get_start_position(const std::string& normalized_country_code) {
+    // 호출부(GameServer.cpp)가 이미 normalize_country_code()를 거친 코드를 넘겨준다는 전제.
+    // 여기서 다시 normalize_country_code()를 호출하면 데모 모드에서 매번 새로 무작위 추첨해
+    // user_data->country에 저장된 코드(라벨/칠하는 색)와 실제 스폰 위치가 서로 다른 국가로
+    // 어긋나는 버그가 있었음 — 위치는 이 코드를 그대로 신뢰해서 조회한다.
+    const std::string& code = normalized_country_code;
 
     double lat = 0.0;   // 폴백: 적도
     double lon = 0.0;   // 폴백: 본초자오선 (=지도 정중앙)
